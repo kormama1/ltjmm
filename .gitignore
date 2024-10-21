@@ -1,0 +1,7 @@
+*.tex
+man
+vignettes/figure
+.Rproj.user
+*.hpp
+*.o
+*.so

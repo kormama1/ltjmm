@@ -1,0 +1,318 @@
+---
+title: "Latent time joint mixed effect model simulation & fit"
+author: "Dan Li and  Michael C. Donohue"
+output: 
+  rmarkdown::html_document:
+    toc: true
+    toc_float: true
+vignette: >
+  %\VignetteIndexEntry{Latent time joint mixed effect model simulation and fit}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r knitr_settings, results = 'hide', echo = FALSE, message = FALSE, cache = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, tidy = FALSE, 
+  fig_width = 6.5, fig_height = 4, comment = NA)
+```
+
+```{r libraries}
+library(dplyr)
+library(tidyr)
+library(ltjmm)
+library(rstan)
+```
+
+```{r settings, echo=FALSE}
+theme_set(theme_bw(base_size = 12))
+cbbPalette <- c("#0072B2", "#D55E00", "#E69F00", 
+                "#F0E442", "#56B4E9", "#CC79A7", "#009E73", "#999999", "#000000")
+scale_colour_discrete <- function(...) scale_colour_manual(..., values=cbbPalette)
+scale_fill_discrete <- function(...) scale_fill_manual(..., values=cbbPalette)
+```
+
+This vignettes demonstrates simulating and fitting latent time joint mixed effect models as described in Li, et al. 2017\footnote{Li, D., Iddi, S., Thompson, W. K., Donohue, M. C., for the Alzheimer's Disease Neuroimaging Initiative. (2017). Bayesian latent time joint mixed effect models for multicohort longitudinal data. \emph{Statistical methods in medical research}, \url{https://doi.org/10.1177/0962280217737566}.}.
+
+The simulated data includes latent times. Random intercepts and slopes are simulated 
+
+# Simulate one example dataset
+```{r simulationParameters}
+rng_seed <- 20161001
+set.seed(rng_seed)
+n <- 400   # subjects
+p <- 4     # outcomes
+t <- 4     # time points
+
+subjects <- data.frame(id = 1:n,
+  age.0 = rnorm(n, 75, 5),
+  apoe = sample(c(0, 1), size = n, replace = TRUE))
+
+subject_time_outcome <- expand.grid(id = 1:n, visit = c(1, 2, 3, 4), outcome = 1:p)
+subject_time_outcome <- subject_time_outcome[order(subject_time_outcome$id, 
+  subject_time_outcome$outcome),]
+
+for(i in 1:n){
+  time.year <- sort(runif(t, 0, 10))  # t number of time points
+  for(j in 1:p){
+    subject_time_outcome$year[(subject_time_outcome$id == i) & 
+      (subject_time_outcome$outcome == j)] <- time.year
+  }
+}
+
+dd <- right_join(subjects, subject_time_outcome, by = 'id')
+dd$Y <- NA
+dd0 <- dd
+setup <- ltjmm(Y ~ year | 1 | id | outcome, data = dd)
+
+## variance parameters 
+sigma_y <- c(0.1, 0.2, 0.3, 0.25)
+# one less degree of freedom for intercepts due to identifiability constraint:
+sigma_alpha0 <- c(0.5, 1, 0.8) 
+sigma_alpha1 <- c(1, 2, 1.5, 1)
+sigma_alpha <- c(sigma_alpha0, sigma_alpha1)
+sigma_delta <- 4
+N_X <- 1
+beta <- matrix(c(1, 0.5, 2, 0.8), p, N_X)
+gamma <- c(0.2, 0.1, 0.25, 0.5)
+
+dd$id <- as.factor(dd$id)
+dd$Outcome <- factor(dd$outcome, levels = 1:p, labels = paste0('Y', 1:p))
+dd$APOE <- factor(dd$apoe, levels = 0:1, labels = c('-', '+'))
+
+dd2 <- simulate(setup,
+  beta = beta,
+  gamma = gamma,
+  sigma_diag = sigma_alpha,
+  sigma_delta = sigma_delta,
+  sigma_y = sigma_y,
+  seed = 201610014)
+
+dd$Y <- dd2$y
+dd$Q <- dd$Z <- dd$Z2 <- NA
+for(oc in unique(dd$outcome)){
+  subs <- dd$outcome == oc
+  ecdf.fun <- ecdf(dd$Y[subs])
+  dd$Q[subs] <- ecdf.fun(dd$Y[subs])
+  dd$Z2[subs] <- qnorm(dd$Q[subs])
+  dd$Z[subs] <- scale(dd$Y[subs])
+}
+```
+
+# Fit LTJMM with independent random effects with Stan
+```{r stanFit, eval=FALSE}
+fit <- ltjmm_stan(Y ~ year |
+    1  | # fixed effects direct on outcome
+    id | outcome,
+  data = dd,
+  pars = c('beta', 'delta', 'alpha0', 'alpha1', 'gamma', 
+    'sigma_alpha0', 'sigma_alpha1', "sigma_delta", 'sigma_y', 'log_lik'),
+  open_progress = FALSE, chains = 2, iter = 1000, thin = 2, cores = 2,
+  seed = rng_seed)
+save(fit, file = 'sim_results.rdata')
+```
+
+```{r loadResults}
+load(file = 'sim_results.rdata')
+fit.sum <- summary(fit)$summary
+```
+
+## Diagnostic plots
+```{r traceplotBeta, fig_width = 6.5, fig_height = 4}
+plot(fit, pars='beta', inc_warmup=TRUE, plotfun='trace')
+```
+
+```{r traceplotGamma}
+plot(fit, pars='gamma', inc_warmup=TRUE, plotfun='trace')
+```
+
+```{r traceplotSigmaDelta}
+plot(fit, pars='sigma_delta', inc_warmup=TRUE, plotfun='trace')
+```
+
+## True versus posterior mean of latent time shifts
+```{r biasDeltaPlot}
+delta <- dd2$delta
+delta.posteriormean <- fit.sum[(grepl('delta', rownames(fit.sum))) & 
+  (!(grepl('sigma_delta', rownames(fit.sum)))), 1]
+par(mgp = c(2.2, 0.45, 0), tcl = -0.4, mar = c(3.3, 3.6, 1.1, 1.1))
+plot(delta, delta.posteriormean,
+  xlim = range(delta), ylim = range(delta), 
+  xlab = expression(paste("True value of time shift ", delta[i])),
+  ylab = expression(paste("Posterior mean of time shift ", delta[i])))
+abline(0, 1, lwd=2, col='red', lty = 2)
+```
+
+## True versus posterior mean of random intercepts and slopes for each outcome
+```{r biasAlphaPlot}
+alpha0true <- as.data.frame(dd2$alpha0) %>% mutate(id = 1:n, parameter='alpha0') %>% 
+  gather(outcome, truth, V1:V4)
+alpha1true <- as.data.frame(dd2$alpha1) %>% mutate(id = 1:n, parameter='alpha1') %>% 
+  gather(outcome, truth, V1:V4)
+alphapm <- data.frame(
+    parameter.id.outcome = grep('alpha', rownames(fit.sum), value=TRUE), 
+    posterior.mean = fit.sum[grepl('alpha', rownames(fit.sum)), 1]) %>% 
+  separate(parameter.id.outcome, c('parameter', 'id', 'outcome', 'other')) %>% 
+  mutate(id = as.numeric(id))
+
+pd <- full_join(alpha0true, alpha1true, by=c('id', 'outcome', 'parameter', 'truth')) %>%
+  mutate(outcome = gsub('V', '', outcome)) %>% 
+  full_join(alphapm) 
+ggplot(pd, aes(x=truth, y=posterior.mean)) + 
+  geom_point(aes(shape=parameter, color=parameter), alpha=0.25) +
+  geom_abline(intercept=0, slope=1) + facet_wrap(~outcome, scales='free')
+```
+
+# Fit LTJMM with multivariate random effects with Stan
+```{r stanFitMulti, eval=FALSE}
+fit <- ltjmm_stan(Y ~ year |
+    1  | # fixed effects direct on outcome
+    id | outcome,
+  random_effects = "multivariate",
+  data = dd,
+  pars = c('beta', 'alpha0', 'alpha1', 'gamma', 
+    'delta', 'sigma_y', 'log_lik'),
+  open_progress = FALSE, chains = 2, iter = 1000, thin = 2, cores = 2)
+save(fit, file = 'sim_lt_multi_results.rdata')
+```
+
+```{r loadResultsMulti}
+load(file = 'sim_lt_multi_results.rdata')
+fit.sum <- summary(fit)$summary
+```
+
+## Diagnostic plots
+```{r traceplotBetaMulti}
+plot(fit, pars='beta', inc_warmup=TRUE, plotfun='trace')
+```
+
+```{r traceplotGammaMulti}
+plot(fit, pars='gamma', inc_warmup=TRUE, plotfun='trace')
+```
+
+## True versus posterior mean of latent time shifts
+```{r biasDeltaPlotMulti}
+delta <- dd2$delta
+delta.posteriormean <- fit.sum[(grepl('delta', rownames(fit.sum))) & 
+  (!(grepl('sigma_delta', rownames(fit.sum)))), 1]
+par(mgp = c(2.2, 0.45, 0), tcl = -0.4, mar = c(3.3, 3.6, 1.1, 1.1))
+plot(delta, delta.posteriormean,
+  xlim = range(delta), ylim = range(delta), 
+  xlab = expression(paste("True value of time shift ", delta[i])),
+  ylab = expression(paste("Posterior mean of time shift ", delta[i])))
+abline(0, 1, lwd=2, col='red', lty = 2)
+```
+
+## True versus posterior mean of random intercepts and slopes for each outcome
+```{r biasAlphaPlotMulti}
+alpha0true <- as.data.frame(dd2$alpha0) %>% mutate(id = 1:n, parameter='alpha0') %>% 
+  gather(outcome, truth, V1:V4)
+alpha1true <- as.data.frame(dd2$alpha1) %>% mutate(id = 1:n, parameter='alpha1') %>% 
+  gather(outcome, truth, V1:V4)
+alphapm <- data.frame(
+    parameter.id.outcome = grep('alpha', rownames(fit.sum), value=TRUE), 
+    posterior.mean = fit.sum[grepl('alpha', rownames(fit.sum)), 1]) %>% 
+  separate(parameter.id.outcome, c('parameter', 'id', 'outcome', 'other')) %>% 
+  mutate(id = as.numeric(id)) %>% 
+  filter(parameter != 'sigma')
+
+pd <- full_join(alpha0true, alpha1true, by=c('id', 'outcome', 'parameter', 'truth')) %>%
+  mutate(outcome = gsub('V', '', outcome)) %>% 
+  full_join(alphapm) 
+ggplot(pd, aes(x=truth, y=posterior.mean)) + 
+  geom_point(aes(shape=parameter, color=parameter), alpha=0.25) +
+  geom_abline(intercept=0, slope=1) + facet_wrap(~outcome, scales='free')
+```
+
+# Fit joint mixed effect model (JMM) with multivariate random effects with Stan
+```{r stanFitJMM, eval=FALSE}
+fit <- ltjmm_stan(Y ~ year |
+    1  | # fixed effects direct on outcome
+    id | outcome,
+  lt = FALSE,
+  random_effects = "multivariate",
+  data = dd,
+  pars = c('beta', 'alpha0', 'alpha1', 'gamma', 
+    'sigma_y', 'log_lik'),
+  open_progress = FALSE, chains = 2, iter = 500, 
+    warmup = 250, thin = 1, cores = 2)
+save(fit, file = 'sim_jmm_results.rdata')
+```
+
+```{r loadResultsJMM}
+load(file = 'sim_jmm_results.rdata')
+fit.sum <- summary(fit)$summary
+```
+
+## Diagnostic plots
+```{r traceplotBetaJMM}
+plot(fit, pars='beta', inc_warmup=TRUE, plotfun='trace')
+```
+
+## True versus posterior mean of random intercepts and slopes for each outcome
+```{r biasAlphaPlotJMM}
+alpha0true <- as.data.frame(dd2$alpha0) %>% mutate(id = 1:n, parameter='alpha0') %>% 
+  gather(outcome, truth, V1:V4)
+alpha1true <- as.data.frame(dd2$alpha1) %>% mutate(id = 1:n, parameter='alpha1') %>% 
+  gather(outcome, truth, V1:V4)
+alphapm <- data.frame(
+    parameter.id.outcome = grep('alpha', rownames(fit.sum), value=TRUE), 
+    posterior.mean = fit.sum[grepl('alpha', rownames(fit.sum)), 1]) %>% 
+  separate(parameter.id.outcome, c('parameter', 'id', 'outcome', 'other')) %>% 
+  mutate(id = as.numeric(id))
+
+pd <- full_join(alpha0true, alpha1true, by=c('id', 'outcome', 'parameter', 'truth')) %>%
+  mutate(outcome = gsub('V', '', outcome)) %>% 
+  full_join(alphapm) 
+ggplot(pd, aes(x=truth, y=posterior.mean)) + 
+  geom_point(aes(shape=parameter, color=parameter), alpha=0.25) +
+  geom_abline(intercept=0, slope=1) + facet_wrap(~outcome, scales='free')
+```
+
+# Fit mixed effect model (MM) with independent univariate random effects with Stan
+```{r stanFitMM, eval=FALSE}
+fit <- ltjmm_stan(Y ~ year |
+    1  | # fixed effects direct on outcome
+    id | outcome,
+  lt = FALSE,
+  random_effects = "univariate",
+  data = dd,
+  pars = c('beta', 'alpha0', 'alpha1', 'gamma', 
+    'sigma_y', 'log_lik'),
+  open_progress = FALSE, chains = 2, iter = 500, 
+    warmup = 250, thin = 1, cores = 2)
+save(fit, file = 'sim_mm_results.rdata')
+```
+
+```{r loadResultsMM}
+load(file = 'sim_mm_results.rdata')
+fit.sum <- summary(fit)$summary
+```
+
+## Diagnostic plots
+```{r traceplotBetaMM}
+plot(fit, pars='beta', inc_warmup=TRUE, plotfun='trace')
+```
+
+```{r traceplotGammaMM}
+plot(fit, pars='gamma', inc_warmup=TRUE, plotfun='trace')
+```
+
+## True versus posterior mean of random intercepts and slopes for each outcome
+```{r biasAlphaPlotMM}
+alpha0true <- as.data.frame(dd2$alpha0) %>% mutate(id = 1:n, parameter='alpha0') %>% 
+  gather(outcome, truth, V1:V4)
+alpha1true <- as.data.frame(dd2$alpha1) %>% mutate(id = 1:n, parameter='alpha1') %>% 
+  gather(outcome, truth, V1:V4)
+alphapm <- data.frame(
+    parameter.id.outcome = grep('alpha', rownames(fit.sum), value=TRUE), 
+    posterior.mean = fit.sum[grepl('alpha', rownames(fit.sum)), 1]) %>% 
+  separate(parameter.id.outcome, c('parameter', 'id', 'outcome', 'other')) %>% 
+  mutate(id = as.numeric(id))
+
+pd <- full_join(alpha0true, alpha1true, by=c('id', 'outcome', 'parameter', 'truth')) %>%
+  mutate(outcome = gsub('V', '', outcome)) %>% 
+  full_join(alphapm) 
+ggplot(pd, aes(x=truth, y=posterior.mean)) + 
+  geom_point(aes(shape=parameter, color=parameter), alpha=0.25) +
+  geom_abline(intercept=0, slope=1) + facet_wrap(~outcome, scales='free')
+```

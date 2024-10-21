@@ -1,0 +1,50 @@
+Package: ltjmm
+Type: Package
+Title: Latent Time Joint Mixed Effect Models
+Version: 1.2
+Date: 2020-11-19
+Authors@R: 
+    person(given = "Michael",
+           family = "Donohue",
+           role = c("aut", "cre"),
+           email = "mdonohue@usc.edu")
+    person(given = "Dan",
+           family = "Li",
+           role = c("aut", "cre"),
+           email = "lidan860922@gmail.com")
+Description: Diseases that progress over long periods of time are often studied
+    by observing cohorts at different stages of disease for shorter periods of
+    time. We apply MCMC sampling to estimate Latent Time Joint Mixed Effect Models
+    (LTJMM) from short-term observations with unknown relative observation times.
+Depends:
+    methods,
+    R (>= 3.4.0),
+    Rcpp (>= 0.12.19)
+Imports: 
+    Formula,
+    stats,
+    mvtnorm,
+    rstan (>= 2.18.1),
+    rstantools (>= 1.5.1)
+LinkingTo: 
+    BH (>= 1.66.0-1),
+    Rcpp (>= 0.12.19),
+    RcppEigen (>= 0.3.3.4.0),
+    rstan (>= 2.18.1),
+    StanHeaders (>= 2.18.0)
+Suggests: knitr,
+    dplyr,
+    tidyr
+VignetteBuilder: knitr 
+License: GPL (>= 3)
+Collate:
+    ltjmm-package.R
+    stanmodels.R
+    zzz.R
+    ltjmm.R
+    ltjmm_stan.R
+Encoding: UTF-8
+LazyData: true
+NeedsCompilation: yes
+SystemRequirements: GNU make
+RoxygenNote: 7.1.1
